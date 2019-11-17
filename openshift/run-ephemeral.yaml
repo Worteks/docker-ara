@@ -1,0 +1,300 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: ara
+  template: ara-ephemeral
+message: |-
+  The following service(s) have been created in your project:
+      https://ara.${WSWEET_ROOT_DOMAIN}
+metadata:
+  annotations:
+    description: ARA - ephemeral
+      see https://github.com/Worteks/docker-ara
+    iconClass: icon-openshift
+    openshift.io/display-name: Ansible Runtime Analysis
+    openshift.io/provider-display-name: Worteks
+    openshift.io/support-url: https://www.worteks.com
+    tags: ara
+  name: ara-ephemeral
+objects:
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      name: postgres-${FRONTNAME}
+    name: postgres-${FRONTNAME}
+  spec:
+    replicas: 1
+    selector:
+      name: postgres-${FRONTNAME}
+    strategy:
+      type: Recreate
+    template:
+      metadata:
+        labels:
+          name: postgres-${FRONTNAME}
+      spec:
+        dnsPolicy: ClusterFirst
+        containers:
+        - capabilities: {}
+          env:
+          - name: POSTGRESQL_USER
+            valueFrom:
+              secretKeyRef:
+                name: ara-${FRONTNAME}
+                key: database-user
+          - name: POSTGRESQL_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: ara-${FRONTNAME}
+                key: database-password
+          - name: POSTGRESQL_DATABASE
+            valueFrom:
+              secretKeyRef:
+                name: ara-${FRONTNAME}
+                key: database-name
+          - name: POSTGRESQL_MAX_CONNECTIONS
+            value: "${ARA_POSTGRES_MAX_CONNECTIONS}"
+          - name: POSTGRESQL_SHARED_BUFFERS
+            value: ${ARA_POSTGRES_SHARED_BUFFERS}
+          image: ' '
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - '-i'
+              - '-c'
+              - pg_isready -h 127.0.0.1 -p 5432
+            initialDelaySeconds: 30
+            timeoutSeconds: 1
+          name: postgres
+          ports:
+          - containerPort: 5432
+            protocol: TCP
+          readinessProbe:
+            exec:
+              command:
+              - /bin/sh
+              - '-i'
+              - '-c'
+              - 'psql -h 127.0.0.1 -U $POSTGRESQL_USER -q -d $POSTGRESQL_DATABASE -c "SELECT 1"'
+            initialDelaySeconds: 5
+            timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "${ARA_POSTGRES_CPU_LIMIT}"
+              memory: "${ARA_POSTGRES_MEMORY_LIMIT}"
+          terminationMessagePath: /dev/termination-log
+          volumeMounts:
+          - name: data
+            mountPath: /var/lib/pgsql/data
+        restartPolicy: Always
+        volumes:
+        - emptyDir: {}
+          name: data
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - postgres
+        from:
+          kind: ImageStreamTag
+          name: ${POSTGRES_IMAGESTREAM_TAG}
+          namespace: ${POSTGRES_NAMESPACE}
+        lastTriggeredImage: ''
+    - type: ConfigChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    annotations:
+      template.openshift.io/expose-uri: postgres://{.spec.clusterIP}:{.spec.ports[?(.name=="postgresql")].port}
+    name: postgres-${FRONTNAME}
+  spec:
+    ports:
+    - name: postgresql
+      protocol: TCP
+      port: 5432
+      targetPort: 5432
+      nodePort: 0
+    selector:
+      name: postgres-${FRONTNAME}
+    type: ClusterIP
+- apiVersion: v1
+  kind: DeploymentConfig
+  metadata:
+    labels:
+      name: ara-${FRONTNAME}
+    name: ara-${FRONTNAME}
+  spec:
+    replicas: 1
+    selector:
+      name: ara-${FRONTNAME}
+    strategy:
+      type: Rolling
+    template:
+      metadata:
+        labels:
+          name: ara-${FRONTNAME}
+      spec:
+        dnsPolicy: ClusterFirst
+        containers:
+        - capabilities: {}
+          env:
+          - name: ARA_FQDN
+            value: ara.${WSWEET_ROOT_DOMAIN}
+          - name: ARA_SECRET_KEY
+            valueFrom:
+              secretKeyRef:
+                key: django-secret
+                name: ara-${FRONTNAME}
+          - name: POSTGRES_DB
+            valueFrom:
+              secretKeyRef:
+                key: database-name
+                name: ara-${FRONTNAME}
+          - name: POSTGRES_HOST
+            value: postgres-${FRONTNAME}
+          - name: POSTGRES_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                key: database-password
+                name: ara-${FRONTNAME}
+          - name: POSTGRES_USER
+            valueFrom:
+              secretKeyRef:
+                key: database-user
+                name: ara-${FRONTNAME}
+          image: ' '
+          imagePullPolicy: IfNotPresent
+          livenessProbe:
+            failureThreshold: 15
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            successThreshold: 1
+            tcpSocket:
+              port: 8080
+            timeoutSeconds: 5
+          name: ara
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          readinessProbe:
+            failureThreshold: 3
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            successThreshold: 1
+            tcpSocket:
+              port: 8080
+            timeoutSeconds: 3
+          resources:
+            limits:
+              cpu: "${ARA_CPU_LIMIT}"
+              memory: "${ARA_MEMORY_LIMIT}"
+          volumeMounts:
+          - name: ara
+            mountPath: /.ara
+        restartPolicy: Always
+        volumes:
+        - emptyDir: {}
+          name: ara
+    triggers:
+    - type: ImageChange
+      imageChangeParams:
+        automatic: true
+        containerNames:
+        - ara
+        from:
+          kind: ImageStreamTag
+          name: ara-${ARA_IMAGE_FRONTNAME}:${ARA_IMAGE_TAG}
+        lastTriggeredImage: ''
+    - type: ConfigChange
+- apiVersion: v1
+  kind: Service
+  metadata:
+    name: ara-${FRONTNAME}
+    annotations:
+      description: Exposes ARA
+  spec:
+    ports:
+    - name: ara
+      port: 8080
+      targetPort: 8080
+    selector:
+      name: ara-${FRONTNAME}
+- apiVersion: v1
+  kind: Route
+  metadata:
+    annotations:
+      haproxy.router.openshift.io/timeout: 3m
+    name: ara-${FRONTNAME}
+  spec:
+    host: ara.${WSWEET_ROOT_DOMAIN}
+    to:
+      kind: Service
+      name: ara-${FRONTNAME}
+    tls:
+      insecureEdgeTerminationPolicy: Redirect
+      termination: edge
+parameters:
+- name: ARA_CPU_LIMIT
+  description: Maximum amount of CPU a ARA container can use
+  displayName: ARA CPU Limit
+  required: true
+  value: 300m
+- name: ARA_IMAGE_FRONTNAME
+  description: The name assigned to ImageStream object defined in corresponding template
+  displayName: Name
+  required: true
+  value: demo
+- name: ARA_IMAGE_TAG
+  description: The ImageStreamTag we should pull images from
+  displayName: Tag
+  required: true
+  value: master
+- name: ARA_MEMORY_LIMIT
+  description: Maximum amount of memory a ARA container can use
+  displayName: ARA Memory Limit
+  required: true
+  value: 512Mi
+- name: ARA_POSTGRES_CPU_LIMIT
+  description: Maximum amount of CPU a ARA database container can use
+  displayName: ARA Postgres CPU Limit
+  required: true
+  value: 500m
+- name: ARA_POSTGRES_MEMORY_LIMIT
+  description: Maximum amount of memory a ARA database container can use
+  displayName: ARA Postgres Memory Limit
+  required: true
+  value: 768Mi
+- name: ARA_POSTGRES_MAX_CONNECTIONS
+  description: Maximum amount of connections PostgreSQL should accept
+  displayName: Maximum Postgres Connections
+  required: true
+  value: "100"
+- name: ARA_POSTGRES_SHARED_BUFFERS
+  displayName: Postgres Shared Buffer Amount
+  description: Amount of Memory PostgreSQL should dedicate to Shared Buffers
+  required: true
+  value: 12MB
+- name: FRONTNAME
+  description: The name identifier assigned to objects defined in this template
+  displayName: Name
+  required: true
+  value: demo
+- name: POSTGRES_IMAGESTREAM_TAG
+  description: PostgreSQL ImageStream Tag
+  displayName: postgresql imagestream tag
+  required: true
+  value: postgresql:10
+- name: POSTGRES_NAMESPACE
+  description: The OpenShift Namespace where the Postgres ImageStream resides
+  displayName: Postgres Namespace
+  required: true
+  value: openshift
+- name: WSWEET_ROOT_DOMAIN
+  description: Wsweet Root Domain
+  displayName: Wsweet Root Domain
+  required: true
+  value: demo.local

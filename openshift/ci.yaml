@@ -1,0 +1,312 @@
+apiVersion: v1
+kind: Template
+labels:
+  app: ara
+  template: ara-jenkins-pipeline
+metadata:
+  annotations:
+    description: ARA - Jenkinsfile
+      see https://github.com/Worteks/docker-ara
+    iconClass: icon-openshift
+    openshift.io/display-name: Ansible Runtime Analysis
+    openshift.io/provider-display-name: Worteks
+    openshift.io/support-url: https://www.worteks.com
+    tags: ara
+  name: ara-jenkins-pipeline
+objects:
+- apiVersion: v1
+  kind: BuildConfig
+  metadata:
+    annotations:
+      description: Tests Wsweet ARA images
+    name: ara-jenkins-pipeline
+  spec:
+    strategy:
+      jenkinsPipelineStrategy:
+        jenkinsfile: |-
+          def frontName    = 'ciara'
+          def gitCommitMsg = ''
+          def templateMark = 'ara-jenkins-ci'
+          def templateSel  = 'jenkins-ci-mark'
+          pipeline {
+              agent {
+                  node { label 'maven' }
+              }
+              options { timeout(time: 90, unit: 'MINUTES') }
+              parameters {
+                  string(defaultValue: 'master', description: 'ARA Docker Image - Source Git Branch', name: 'araBranch')
+                  string(defaultValue: 'master', description: 'ARA Docker Image - Source Git Hash', name: 'araHash')
+                  string(defaultValue: '${GIT_SOURCE_HOST}/Wsweet/docker-ara.git', description: 'ARA Docker Image - Source Git Repository', name: 'araRepo')
+                  string(defaultValue: '3', description: 'Max Retry', name: 'jobMaxRetry')
+                  string(defaultValue: '1', description: 'Retry Count', name: 'jobRetryCount')
+                  string(defaultValue: '${OPENSHIFT_ROUTED_DOMAIN}', description: 'CI Router Root Domain', name: 'rootDomain')
+              }
+              stages {
+                  stage('pre-cleanup') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      echo "Using project: ${openshift.project()}"
+                                      echo "cleaning up previous assets for ara-${frontName}-${params.araHash}"
+                                      openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.araHash}" ]).delete()
+                                      openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.araHash}" ]).delete()
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('create') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      def namespace = "${openshift.project()}"
+                                      try {
+                                          timeout(10) {
+                                              def cloneProto = "http"
+                                              def created
+                                              def objectsFromTemplate
+                                              def privateRepo = false
+                                              def repoHost = params.araRepo.split('/')[0]
+                                              def templatePath = "/tmp/workspace/${namespace}/${namespace}-ara-jenkins-pipeline/tmpara${params.araBranch}/openshift"
+                                              sh "git config --global http.sslVerify false"
+                                              sh "rm -fr tmpara${params.araBranch}; mkdir -p tmpara${params.araBranch}"
+                                              dir ("tmpara${params.araBranch}") {
+                                                  try {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          privateRepo = true
+                                                          cloneProto = "https"
+                                                          echo "cloning ${params.araRepo} over https, using ${repoHost} token"
+                                                          try { git([ branch: "${params.araBranch}", url: "https://${GIT_TOKEN}@${params.araRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.araRepo}#${params.araBranch} - ${e2}"
+                                                              throw e2
+                                                          }
+                                                      }
+                                                  } catch(e) {
+                                                      if (privateRepo != true) {
+                                                          echo "caught ${e} - assuming no credentials required"
+                                                          echo "cloning ${params.araRepo} over http"
+                                                          try { git([ branch: "${params.araBranch}", url: "http://${params.araRepo}" ]) }
+                                                          catch(e2) {
+                                                              echo "Failed cloning ${params.araRepo}#${params.araBranch} - ${e2}"
+                                                              throw e2
+                                                          }
+                                                      }
+                                                  }
+                                                  try {
+                                                      gitCommitMsg = sh(returnStdout: true, script: "git log -n 1").trim()
+                                                  } catch(e) { echo "In non-critical catch block resolving commit message - ${e}" }
+                                              }
+                                              try { sh "test -d ${templatePath}" }
+                                              catch (e) {
+                                                  echo "Could not find ./openshift in ${params.araRepo}#${params.araBranch}"
+                                                  throw e
+                                              }
+                                              echo "Processing ARA:${params.araHash}, from ${repoHost}, tagging to ${params.araBranch}"
+                                              try {
+                                                  echo " == Creating ImageStream =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/imagestream.yaml", '-p', "FRONTNAME=demo")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach { echo "Created ${it.name()} with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating ImageStream - ${e}" }
+                                              try {
+                                                  echo " == Creating BuildConfigs =="
+                                                  if (privateRepo) {
+                                                      withCredentials([string(credentialsId: "git-${repoHost}", variable: 'GIT_TOKEN')]) {
+                                                          objectsFromTemplate = openshift.process("-f", "${templatePath}/build-with-secret.yaml",
+                                                              '-p', "ARA_REPOSITORY_REF=${params.araHash}",
+                                                              '-p', "ARA_REPOSITORY_URL=${cloneProto}://${params.araRepo}",
+                                                              '-p', "FRONTNAME=demo", '-p', "GIT_DEPLOYMENT_TOKEN=${GIT_TOKEN}")
+                                                      }
+                                                  } else {
+                                                      objectsFromTemplate = openshift.process("-f", "${templatePath}/build.yaml",
+                                                          '-p', "ARA_REPOSITORY_REF=${params.araHash}", '-p', "FRONTNAME=demo",
+                                                          '-p', "ARA_REPOSITORY_URL=${cloneProto}://${params.araRepo}")
+                                                  }
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.araHash}" }
+                                                  created = openshift.apply(objectsFromTemplate)
+                                                  created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating BuildConfigs - ${e}" }
+                                              try {
+                                                  echo " == Creating Secrets =="
+                                                  objectsFromTemplate = openshift.process("-f", "${templatePath}/secret.yaml", '-p', "FRONTNAME=${frontName}-${params.araHash}")
+                                                  echo "The template will create ${objectsFromTemplate.size()} objects"
+                                                  for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.araHash}" }
+                                                  created = openshift.create(objectsFromTemplate)
+                                                  created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                              } catch(e) { echo "In non-critical catch block while creating Secret - ${e}" }
+                                              echo " == Creating Demo =="
+                                              objectsFromTemplate = openshift.process("-f", "${templatePath}/run-ephemeral.yaml",
+                                                  '-p', "FRONTNAME=${frontName}-${params.araHash}", '-p', "ARA_IMAGE_TAG=${params.araHash}",
+                                                  '-p', "WSWEET_ROOT_DOMAIN=${params.araHash}.${params.rootDomain}")
+                                              echo "The template will create ${objectsFromTemplate.size()} objects"
+                                              for (o in objectsFromTemplate) { o.metadata.labels["${templateSel}"] = "${templateMark}-${params.araHash}" }
+                                              created = openshift.create(objectsFromTemplate)
+                                              created.withEach { echo "Created ${it.name()} from template with labels ${it.object().metadata.labels}" }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while creating resources - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('build') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(45) {
+                                              echo "watching ara-demo-${params.araHash} docker image build"
+                                              def builds = openshift.selector("bc", [ name: "ara-demo-${params.araHash}" ]).related('builds')
+                                              builds.untilEach(1) { return (it.object().status.phase == "Complete") }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while building Docker image - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('deploy') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(10) {
+                                              def namespace = "${openshift.project()}"
+                                              try {
+                                                  sh """
+                                                  oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                  oc describe -n ${namespace} imagestreamtag ara-demo:${params.araHash} || exit 1
+                                                  """
+                                              } catch(e) {
+                                                  echo "In catch block while looking for ARA image - ${e}"
+                                                  throw e
+                                              }
+                                              retry(2) {
+                                                  echo "watching postgres-${frontName}-${params.araHash} deployment rollout"
+                                                  def dc = openshift.selector("dc", [ name: "postgres-${frontName}-${params.araHash}" ]).related('pods')
+                                                  dc.untilEach(1) { return (it.object().status.phase == "Running") }
+                                                  echo "watching ara-${frontName}-${params.araHash} deployment rollout"
+                                                  dc = openshift.selector("dc", [ name: "ara-${frontName}-${params.araHash}" ]).related('pods')
+                                                  dc.untilEach(1) { return (it.object().status.phase == "Running") }
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while deploying - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('check') {
+                      steps {
+                          script {
+                              openshift.withCluster() {
+                                  openshift.withProject() {
+                                      try {
+                                          timeout(5) {
+                                              echo "waiting an additional 2 minutes for applications to finish starting up"
+                                              sleep 120
+                                              retry(3) {
+                                                  def araret = httpRequest ignoreSslErrors: true, url: "https://ara.${params.araHash}.${params.rootDomain}", timeout: 30, httpMode: 'GET'
+                                                  println("GET ara status: " + araret.status)
+                                                  println("GET ara content: " + araret.content)
+                                              }
+                                          }
+                                      } catch(e) {
+                                          echo "In catch block while checking ARA - ${e}"
+                                          throw e
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+                  stage('tag') {
+                      steps {
+                          script {
+                              if ("${params.araBranch}" == "${params.araHash}") { echo "skipping tag - source matches target" }
+                              else {
+                                  openshift.withCluster() {
+                                      openshift.withProject() {
+                                          try {
+                                              timeout(5) {
+                                                  def namespace  = "${openshift.project()}"
+                                                  retry(3) {
+                                                      sh """
+                                                      oc login https://kubernetes.default.svc.cluster.local --certificate-authority=/var/run/secrets/kubernetes.io/serviceaccount/ca.crt --token=\$(cat /var/run/secrets/kubernetes.io/serviceaccount/token) > /dev/null 2>&1
+                                                      oc tag -n ${namespace} ara-demo:${params.araHash} ara-demo:${params.araBranch}
+                                                      """
+                                                  }
+                                              }
+                                          } catch(e) {
+                                              echo "In catch block while tagging ARA image - ${e}"
+                                              throw e
+                                          }
+                                      }
+                                  }
+                              }
+                          }
+                      }
+                  }
+              }
+              post {
+                  always {
+                      script {
+                          openshift.withCluster() {
+                              openshift.withProject() {
+                                  def namespace   = "${openshift.project()}"
+                                  def postJobName = "${namespace}/${namespace}-post-triggers-jenkins-pipeline"
+                                  currentBuild.description = """
+                                  ${params.araRepo} ${params.araBranch} (try ${params.jobRetryCount}/${params.jobMaxRetry})
+                                  ${gitCommitMsg}
+                                  """.stripIndent()
+                                  echo "cleaning up assets for ara-demo-${params.araHash}"
+                                  sh "rm -fr /tmp/workspace/${namespace}/${namespace}-ara-jenkins-pipeline/tmpara${params.araBranch}"
+                                  openshift.selector("all", [ "${templateSel}": "${templateMark}-${params.araHash}" ]).delete()
+                                  openshift.selector("secrets", [ "${templateSel}": "${templateMark}-${params.araHash}" ]).delete()
+                                  def jobParams = [
+                                          [$class: 'StringParameterValue', name: "jobMaxRetry", value: params.jobMaxRetry],
+                                          [$class: 'StringParameterValue', name: "jobRetryCount", value: params.jobRetryCount],
+                                          [$class: 'StringParameterValue', name: "jobStatus", value: currentBuild.currentResult],
+                                          [$class: 'StringParameterValue', name: "sourceBranch", value: params.araBranch],
+                                          [$class: 'StringParameterValue', name: "sourceComponent", value: "ara"],
+                                          [$class: 'StringParameterValue', name: "sourceRef", value: params.araHash],
+                                          [$class: 'StringParameterValue', name: "sourceRepo", value: params.araRepo]
+                                      ]
+                                  try { build job: postJobName, parameters: jobParams, propagate: false, wait: false }
+                                  catch(e) { echo "caught ${e} starting Job post-process" }
+                              }
+                          }
+                      }
+                  }
+                  changed { echo "changed?" }
+                  failure { echo "Build failed (${params.jobRetryCount} out of ${params.jobMaxRetry})" }
+                  success { echo "success!" }
+                  unstable { echo "unstable?" }
+              }
+          }
+      type: JenkinsPipeline
+parameters:
+- name: GIT_SOURCE_HOST
+  description: Git FQDN we would build images from
+  displayName: Git
+  value: github.com
+- name: OPENSHIFT_ROUTED_DOMAIN
+  description: OpenShift Routers-served Root Domain
+  displayName: CI Router Domain
+  value: ci.dev.wopla.io
