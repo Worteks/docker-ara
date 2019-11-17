@@ -17,6 +17,10 @@ if test "$ARA_FQDN"; then
     ARA_CORS_ALLOW_ALL=false
 else
     ARA_CORS_ALLOW_ALL=true
+    ARA_FQDN=localhost
+fi
+if test -z "$ARA_HOSTNAME"; then
+    ARA_HOSTNAME=$(hostname 2>/dev/null || echo localhost)
 fi
 
 DB_INITIALIZED=false
@@ -94,6 +98,7 @@ fi
 mkdir -p /.ara/server
 if ! test -s /.ara/server/settings.yaml; then
     sed -e "s|ARA_FQDN|$ARA_FQDN|" \
+	-e "s|ARA_HNAME|$ARA_HOSTNAME|" \
 	-e "s|BINDPORT|$LISTEN_PORT|" \
 	-e "s|CORS_ALLOW_ALL|$ARA_CORS_ALLOW_ALL|" \
 	-e "s|DBENGINE|$ARA_DATABASE_ENGINE|" \
@@ -111,7 +116,7 @@ unset MYSQL_DB MYSQL_HOST MYSQL_PASSWORD MYSQL_PORT MYSQL_USER \
     POSTGRES_DB POSTGRES_HOST POSTGRES_PASSWORD POSTGRES_PORT \
     POSTGRES_USER cpt ARA_CORS_ALLOW_ALL ARA_DATABASE_HOST ARA_DEBUG \
     ARA_DATABASE_NAME ARA_DATABASE_PASSWORD ARA_DATABASE_PORT ARA_SECRET_KEY \
-    ARA_CORS_ALLOW_ALL ARA_FQDN ARA_TIME_ZONE
+    ARA_CORS_ALLOW_ALL ARA_FQDN ARA_TIME_ZONE ARA_HOSTNAME
 
 if ! $DB_INITIALIZED; then
     echo Initializing database ...

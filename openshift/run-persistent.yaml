@@ -45,8 +45,7 @@ objects:
       spec:
         dnsPolicy: ClusterFirst
         containers:
-        - capabilities: {}
-          env:
+        - env:
           - name: POSTGRESQL_USER
             valueFrom:
               secretKeyRef:
@@ -113,7 +112,6 @@ objects:
           kind: ImageStreamTag
           name: ${POSTGRES_IMAGESTREAM_TAG}
           namespace: ${POSTGRES_NAMESPACE}
-        lastTriggeredImage: ''
     - type: ConfigChange
 - apiVersion: v1
   kind: Service
@@ -148,12 +146,12 @@ objects:
         labels:
           name: ara-${FRONTNAME}
       spec:
-        dnsPolicy: ClusterFirst
         containers:
-        - capabilities: {}
-          env:
+        - env:
           - name: ARA_FQDN
             value: ara.${WSWEET_ROOT_DOMAIN}
+          - name: ARA_HOSTNAME
+            value: ara-${FRONTNAME}
           - name: ARA_SECRET_KEY
             valueFrom:
               secretKeyRef:
@@ -218,7 +216,6 @@ objects:
         from:
           kind: ImageStreamTag
           name: ara-${ARA_IMAGE_FRONTNAME}:${ARA_IMAGE_TAG}
-        lastTriggeredImage: ''
     - type: ConfigChange
 - apiVersion: v1
   kind: Service

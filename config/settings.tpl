@@ -9,6 +9,7 @@ default:
     listitems:
     - ::1
     - ARA_FQDN
+    - ARA_HNAME
     - 127.0.0.1
     - localhost
     state:
@@ -24,7 +25,10 @@ default:
   CORS_ORIGIN_WHITELIST: !!python/object/new:box.BoxList
     listitems:
     - http://127.0.0.1:BINDPORT
+    - http://127.0.0.1
     - http://localhost:BINDPORT
+    - http://localhost
+    - http://ARA_HNAME:BINDPORT
     - https://ARA_FQDN
     state:
       box_class: *id001
