@@ -43,3 +43,30 @@ initialization by passing `-e VAR=VALUE` to the Docker `run` command.
 |  `POSTGRES_PASSWORD`  | PostgreSQL Database Password    | `secret`      |
 |  `POSTGRES_PORT`      | PostgreSQL Database Port        | `5432`        |
 |  `POSTGRES_USER`      | PostgreSQL Database Username    | `ara`         |
+
+Pruning older records
+----------------------
+
+Currently, ARA just archives all runs, with no internal purge process.
+The following should assist in getting rid of older runs:
+
+```
+$ PRUNE_PENDING_STARTED_BEFORE=2019-11-15
+$ PRUNE_COMPLETED_STARTED_BEFORE=2019-10-30
+$ ( echo "SELECT playbook_id FROM plays"
+    echo "  WHERE (status = 'running' AND ended IS NULL"
+    echo "         AND created < '$PRUNE_PENDING_STARTED_BEFORE'::date)"
+    echo "     OR (status = 'completed'"
+    echo "         AND ended < '$PRUNE_COMPLETED_STARTED_BEFORE'::date);"
+  ) | psql -t ara 2>/dev/null | sed 's| ||g' | while read playbook_id
+    do
+	test "$playbook_id" -ge 0 2>/dev/null || continue
+	echo "DELETE FROM results WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM hosts WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM tasks WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM plays WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM files WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM playbooks_labels WHERE playbook_id = $playbook_id;"
+	echo "DELETE FROM playbooks WHERE id = $playbook_id;"
+    done | psql -t ara
+```

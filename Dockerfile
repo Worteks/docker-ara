@@ -11,7 +11,8 @@ LABEL io.k8s.description="ARA Collects and Archives Reports from Ansible." \
       maintainer="Samuel MARTIN MORO <sammar@worteks.com>" \
       version="1.2.0"
 
-ENV DEBIAN_FRONTEND=noninteractive
+ENV ARA_VERSION=1.2.0 \
+    DEBIAN_FRONTEND=noninteractive
 
 COPY config/* /
 RUN apt-get update \
@@ -23,7 +24,7 @@ RUN apt-get update \
     && mkdir -p /usr/share/man/man1 /usr/share/man/man7 \
     && apt-get install -y gcc python-dev libffi-dev libssl-dev \
 	mariadb-client postgresql-client libpq-dev dumb-init \
-    && pip install psycopg2 pymysql ara[server] \
+    && pip install psycopg2 pymysql ara[server]==${ARA_VERSION} \
     && if test "$DEBUG"; then \
 	apt-get -y install curl psutils; \
     fi \
